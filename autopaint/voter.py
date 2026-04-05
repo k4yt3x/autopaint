@@ -3,15 +3,17 @@ from __future__ import annotations
 import random
 import time
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 import requests
 from loguru import logger
 
+from autopaint.useragent import build_extra_headers
+
+if TYPE_CHECKING:
+    from autopaint.monitor import RankGate
+
 VOTE_URL_TEMPLATE = "https://please.paintastreet.com/tiles/{tile_id}/vote"
-UA_LIST_URL = (
-    "https://raw.githubusercontent.com/MichaelJorky/"
-    "top-user-agents-latest/refs/heads/main/data/browsers/browsers_1.txt"
-)
 
 DEFAULT_HEADERS = {
     "Accept": "*/*",
@@ -20,42 +22,15 @@ DEFAULT_HEADERS = {
     "Referer": "https://paintastreet.com/",
     "content-type": "application/json",
     "Origin": "https://paintastreet.com",
-    "Sec-GPC": "1",
     "Connection": "keep-alive",
     "Sec-Fetch-Dest": "empty",
     "Sec-Fetch-Mode": "cors",
     "Sec-Fetch-Site": "same-site",
-    "Priority": "u=0",
-    "TE": "trailers",
 }
-
-MULLVAD_RELAYS_URL = "https://api.mullvad.net/public/relays/wireguard/v2"
 
 FALLBACK_WAIT_SECONDS = 600
 TILE_BACKOFF_MIN_SECONDS = 10
 TILE_BACKOFF_MAX_SECONDS = 60
-
-
-def fetch_user_agents() -> list[str]:
-    """Fetch the latest user agent list from GitHub."""
-    resp = requests.get(UA_LIST_URL, timeout=30)
-    resp.raise_for_status()
-    agents = [line.strip() for line in resp.text.splitlines() if line.strip()]
-    logger.info("Fetched {} user agents", len(agents))
-    return agents
-
-
-def fetch_proxies(country: str) -> list[str]:
-    """Fetch SOCKS5 proxy addresses from Mullvad for a given country code."""
-    resp = requests.get(MULLVAD_RELAYS_URL, timeout=30)
-    resp.raise_for_status()
-    proxies: list[str] = []
-    for relay in resp.json()["wireguard"]["relays"]:
-        if relay["location"].startswith(f"{country}-") and relay["active"]:
-            host = relay["hostname"].replace("wg-", "wg-socks5-")
-            proxies.append(f"socks5://{host}.relays.mullvad.net:1080")
-    logger.info("Fetched {} Mullvad proxies for country={}", len(proxies), country)
-    return proxies
 
 
 class Voter:
@@ -66,16 +41,21 @@ class Voter:
         user_agent: str,
         tile_id: str,
         proxy: str | None = None,
+        gate: RankGate | None = None,
     ) -> None:
         self.session_cookie = session_cookie
         self.tile_id = tile_id
         self.url = VOTE_URL_TEMPLATE.format(tile_id=tile_id)
+
         self.headers = {
             **DEFAULT_HEADERS,
+            **build_extra_headers(user_agent),
             "User-Agent": user_agent,
             "Cookie": f"session={session_cookie}",
         }
+
         self.proxies = {"https": proxy} if proxy else None
+        self.gate = gate
         self.label = f"#{index:02d} {session_cookie[:8]}"
 
     def _cast_vote(self) -> requests.Response:
@@ -118,8 +98,16 @@ class Voter:
         """Vote in a loop, respecting rate limits. Runs forever."""
         logger.info("[{}] Starting voter", self.label)
         logger.debug("[{}] UA: {}", self.label, self.headers["User-Agent"])
-        logger.debug("[{}] Proxy: {}", self.label, self.proxies.get("https") if self.proxies else "none")
+        logger.debug(
+            "[{}] Proxy: {}",
+            self.label,
+            self.proxies.get("https") if self.proxies else "none",
+        )
+
         while True:
+            if self.gate is not None:
+                self.gate.wait()
+
             try:
                 resp = self._cast_vote()
                 body = resp.json()
@@ -127,6 +115,7 @@ class Voter:
                 logger.exception("[{}] Request failed", self.label)
                 time.sleep(10)
                 continue
+
             except ValueError:
                 logger.error("[{}] Invalid JSON in response", self.label)
                 time.sleep(10)
@@ -137,6 +126,7 @@ class Voter:
                 logger.info("[{}] Vote OK ({} remaining)", self.label, remaining)
                 if remaining == 0:
                     self._wait_until_reset(body)
+
             elif resp.status_code == 429:
                 error_msg = body.get("error", "unknown")
                 logger.warning("[{}] Rate limited: {}", self.label, error_msg)
@@ -150,6 +140,7 @@ class Voter:
                         "[{}] Tile rate limit, retrying in {:.0f}s", self.label, wait
                     )
                     time.sleep(wait)
+
             else:
                 logger.error(
                     "[{}] Unexpected status {}: {}",
