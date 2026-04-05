@@ -1,0 +1,20 @@
+[project]
+name = "autopaint"
+description = "Automated voting tool for paintastreet.com"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "loguru>=0.7.3",
+    "requests[socks]>=2.32",
+]
+dynamic = ["version"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "autopaint/__init__.py"
+
+[project.scripts]
+autopaint = "autopaint.__main__:main"
