@@ -126,6 +126,68 @@ class TestRankGateDirection:
 
 
 # ---------------------------------------------------------------------------
+# RankGate — top1 strategy
+# ---------------------------------------------------------------------------
+
+
+class TestRankGateTop1:
+    def _make_gate(self, vote_buffer=50):
+        return RankGate("tile-a", top1=True, vote_buffer=vote_buffer)
+
+    def test_not_first_votes_up(self):
+        gate = self._make_gate()
+        gate.update_rankings({"tile-x": 1000, "tile-a": 500})
+        assert gate.position == 2
+        assert gate.get_direction() == "up"
+
+    def test_first_small_lead_votes_up(self):
+        gate = self._make_gate(vote_buffer=50)
+        gate.update_rankings({"tile-a": 1000, "tile-x": 980})
+        # lead = 20 < buffer 50 → keep voting
+        assert gate.position == 1
+        assert gate.get_direction() == "up"
+
+    def test_first_big_lead_pauses(self):
+        gate = self._make_gate(vote_buffer=50)
+        gate.update_rankings({"tile-a": 1000, "tile-x": 900})
+        # lead = 100 > buffer 50 → pause
+        assert gate.position == 1
+        assert not gate._event.is_set()
+
+    def test_first_exact_buffer_pauses(self):
+        gate = self._make_gate(vote_buffer=50)
+        gate.update_rankings({"tile-a": 1050, "tile-x": 1000})
+        # lead = 50, not > buffer → still voting
+        assert gate.get_direction() == "up"
+
+    def test_first_one_over_buffer_pauses(self):
+        gate = self._make_gate(vote_buffer=50)
+        gate.update_rankings({"tile-a": 1051, "tile-x": 1000})
+        # lead = 51 > buffer 50 → pause
+        assert not gate._event.is_set()
+
+    def test_resumes_when_2nd_catches_up(self):
+        gate = self._make_gate(vote_buffer=50)
+
+        # Paused with big lead.
+        gate.update_rankings({"tile-a": 1000, "tile-x": 900})
+        assert not gate._event.is_set()
+
+        # 2nd place catches up.
+        gate.update_rankings({"tile-x": 960})
+        # lead = 40 < buffer 50 → resume
+        assert gate._event.is_set()
+        assert gate.get_direction() == "up"
+
+    def test_never_votes_down(self):
+        gate = self._make_gate()
+        gate.update_rankings({"tile-a": 1000, "tile-x": 500})
+        # Even with huge lead, direction is None (pause) not "down".
+        direction = gate._compute_direction()
+        assert direction in ("up", None)
+
+
+# ---------------------------------------------------------------------------
 # RankGate — get_direction blocking
 # ---------------------------------------------------------------------------
 

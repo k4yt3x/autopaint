@@ -33,11 +33,13 @@ class RankGate:
         rank_target: int = 3,
         rank_resume: int = 5,
         vote_buffer: int = 50,
+        top1: bool = False,
     ) -> None:
         self.tile_id = tile_id
         self.rank_target = rank_target
         self.rank_resume = rank_resume
         self.vote_buffer = vote_buffer
+        self.top1 = top1
 
         self._rankings: dict[str, int] = {}
         self._position: int | None = None
@@ -91,6 +93,35 @@ class RankGate:
 
     def _compute_direction(self) -> str | None:
         """Decide vote direction based on current rank and vote gap."""
+        if self.top1:
+            return self._compute_direction_top1()
+        return self._compute_direction_hold()
+
+    def _compute_direction_top1(self) -> str | None:
+        """Top-1 strategy: race to #1, then pause when lead exceeds buffer."""
+        pos = self._position
+
+        if pos is None:
+            return "up"
+
+        # Not #1 yet — keep voting up.
+        if pos > 1:
+            return "up"
+
+        # At #1 — check lead over 2nd place.
+        second_votes = self._get_nth_place_votes(2)
+        our_votes = self._rankings.get(self.tile_id)
+
+        if second_votes is None or our_votes is None:
+            return "up"
+
+        if our_votes > second_votes + self.vote_buffer:
+            return None
+
+        return "up"
+
+    def _compute_direction_hold(self) -> str | None:
+        """Hold strategy: stabilize at rank_target, vote down if above."""
         pos = self._position
 
         if pos is None:
@@ -308,10 +339,11 @@ def start_monitor(gate: RankGate, user_agent: str) -> threading.Thread:
     thread = threading.Thread(target=_run, daemon=True, name="vote-monitor")
     thread.start()
 
+    mode = "top1" if gate.top1 else f"hold #{gate.rank_target}"
     logger.info(
-        "Vote monitor started (tile={}, target=#{}, buffer={})",
+        "Vote monitor started (tile={}, mode={}, buffer={})",
         gate.tile_id[:8],
-        gate.rank_target,
+        mode,
         gate.vote_buffer,
     )
 

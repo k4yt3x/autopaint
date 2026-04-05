@@ -2,13 +2,13 @@
 run *args:
     uv run python -m autopaint -v {{ args }}
 
-# Run with verbose logging
-run-verbose *args:
-    uv run python -m autopaint -v {{ args }}
-
-# Run with auto-rank holding 3rd place
+# Run with auto-rank holding target place
 run-hold *args:
     uv run python -m autopaint -v --auto-rank {{ args }}
+
+# Run racing to #1 with vote buffer
+run-top1 *args:
+    uv run python -m autopaint -v --top1 {{ args }}
 
 # Install/sync dependencies
 sync:

@@ -47,7 +47,13 @@ def main() -> None:
         "--auto-rank",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="automatically pause/resume voting based on tile ranking",
+        help="hold tile at rank-target, voting down if above",
+    )
+    parser.add_argument(
+        "--top1",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="race to #1 then pause when lead exceeds vote-buffer",
     )
     parser.add_argument(
         "--rank-target",
@@ -93,11 +99,15 @@ def main() -> None:
 
     gate = None
 
-    if args.auto_rank:
+    if args.auto_rank or args.top1:
         from autopaint.monitor import RankGate, start_monitor
 
         gate = RankGate(
-            args.tile_id, args.rank_target, args.rank_resume, args.vote_buffer
+            args.tile_id,
+            args.rank_target,
+            args.rank_resume,
+            args.vote_buffer,
+            top1=args.top1,
         )
         start_monitor(gate, random.choice(user_agents))
 
