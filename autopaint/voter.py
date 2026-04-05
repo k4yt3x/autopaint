@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import random
 import time
 from datetime import datetime, timezone
@@ -8,6 +6,7 @@ from typing import TYPE_CHECKING
 import requests
 from loguru import logger
 
+from autopaint.ratelimit import AdaptiveRateLimiter
 from autopaint.useragent import build_extra_headers
 
 if TYPE_CHECKING:
@@ -42,6 +41,7 @@ class Voter:
         tile_id: str,
         proxy: str | None = None,
         gate: RankGate | None = None,
+        limiter: AdaptiveRateLimiter | None = None,
     ) -> None:
         self.session_cookie = session_cookie
         self.tile_id = tile_id
@@ -56,6 +56,7 @@ class Voter:
 
         self.proxies = {"https": proxy} if proxy else None
         self.gate = gate
+        self.limiter = limiter
         self.label = f"#{index:02d} {session_cookie[:8]}"
 
     def _cast_vote(self) -> requests.Response:
@@ -79,7 +80,7 @@ class Voter:
                 wait = (reset_time - now).total_seconds() + 1
                 if wait > 0:
                     return wait
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 pass
 
         window = budget.get("window_seconds")
@@ -108,9 +109,20 @@ class Voter:
             if self.gate is not None:
                 self.gate.wait()
 
+            # Throttle across all threads via shared adaptive rate limiter.
+            # acquire() returns a generation number; if a tile 429 bumps
+            # the generation before we fire, we re-acquire instead of
+            # sending a request that will certainly be rejected.
+            if self.limiter is not None:
+                gen = self.limiter.acquire()
+
+                if self.limiter.is_stale(gen):
+                    continue
+
             try:
                 resp = self._cast_vote()
                 body = resp.json()
+
             except requests.RequestException:
                 logger.exception("[{}] Request failed", self.label)
                 time.sleep(10)
@@ -124,22 +136,27 @@ class Voter:
             if resp.status_code == 200:
                 remaining = body.get("vote_budget", {}).get("remaining", "?")
                 logger.info("[{}] Vote OK ({} remaining)", self.label, remaining)
+
+                if self.limiter is not None:
+                    self.limiter.on_success()
+
                 if remaining == 0:
                     self._wait_until_reset(body)
 
             elif resp.status_code == 429:
                 error_msg = body.get("error", "unknown")
                 logger.warning("[{}] Rate limited: {}", self.label, error_msg)
+
                 if "vote_budget" in body:
                     self._wait_until_reset(body)
+                elif self.limiter is not None:
+                    self.limiter.on_tile_limited()
                 else:
-                    # Tile-level rate limit (no budget info).
-                    # Back off briefly with jitter before retrying.
-                    wait = random.uniform(TILE_BACKOFF_MIN_SECONDS, TILE_BACKOFF_MAX_SECONDS)
-                    logger.info(
-                        "[{}] Tile rate limit, retrying in {:.0f}s", self.label, wait
+                    time.sleep(
+                        random.uniform(
+                            TILE_BACKOFF_MIN_SECONDS, TILE_BACKOFF_MAX_SECONDS
+                        )
                     )
-                    time.sleep(wait)
 
             else:
                 logger.error(

@@ -1,10 +1,9 @@
-from __future__ import annotations
-
 import asyncio
 import json
 import threading
 
 import websockets
+import websockets.exceptions
 from loguru import logger
 
 WS_URL = "wss://please.paintastreet.com/connection/websocket"
@@ -163,9 +162,21 @@ async def _monitor_loop(gate: RankGate, user_agent: str) -> None:
                         elif "tiles" in pub_data:
                             _process_tiles(gate, pub_data)
 
+        except (
+            websockets.exceptions.ConnectionClosed,
+            asyncio.TimeoutError,
+            OSError,
+        ) as exc:
+            logger.warning(
+                "WS disconnected ({}), reconnecting in {}s",
+                exc,
+                RECONNECT_DELAY_SECONDS,
+            )
+            await asyncio.sleep(RECONNECT_DELAY_SECONDS)
+
         except Exception:
             logger.exception(
-                "WS connection lost, reconnecting in {}s", RECONNECT_DELAY_SECONDS
+                "WS unexpected error, reconnecting in {}s", RECONNECT_DELAY_SECONDS
             )
             await asyncio.sleep(RECONNECT_DELAY_SECONDS)
 

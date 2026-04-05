@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import argparse
 import json
 import random
@@ -9,6 +7,7 @@ import threading
 from loguru import logger
 
 from autopaint.proxy import fetch_proxies
+from autopaint.ratelimit import AdaptiveRateLimiter
 from autopaint.useragent import fetch_user_agents
 from autopaint.voter import Voter
 
@@ -93,13 +92,20 @@ def main() -> None:
         gate = RankGate(args.tile_id, args.rank_target, args.rank_resume)
         start_monitor(gate, random.choice(user_agents))
 
+    limiter = AdaptiveRateLimiter()
     threads: list[threading.Thread] = []
 
     for index, session_cookie in enumerate(sessions, start=1):
         user_agent = random.choice(user_agents)
         proxy = random.choice(proxies) if proxies else None
         voter = Voter(
-            index, session_cookie, user_agent, args.tile_id, proxy=proxy, gate=gate
+            index,
+            session_cookie,
+            user_agent,
+            args.tile_id,
+            proxy=proxy,
+            gate=gate,
+            limiter=limiter,
         )
         thread = threading.Thread(target=voter.run, daemon=True)
         thread.start()
