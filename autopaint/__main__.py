@@ -61,6 +61,12 @@ def main() -> None:
         help="resume voting when tile falls below this rank",
     )
     parser.add_argument(
+        "--vote-buffer",
+        type=int,
+        default=50,
+        help="vote gap to maintain below the rank above target",
+    )
+    parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -89,7 +95,9 @@ def main() -> None:
     if args.auto_rank:
         from autopaint.monitor import RankGate, start_monitor
 
-        gate = RankGate(args.tile_id, args.rank_target, args.rank_resume)
+        gate = RankGate(
+            args.tile_id, args.rank_target, args.rank_resume, args.vote_buffer
+        )
         start_monitor(gate, random.choice(user_agents))
 
     limiter = AdaptiveRateLimiter()

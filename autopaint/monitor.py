@@ -13,35 +13,58 @@ PING_INTERVAL_SECONDS = 25
 
 
 class RankGate:
-    """Thread-safe gate that pauses voting based on tile ranking position.
+    """Thread-safe gate that stabilizes a tile at a target rank.
 
-    Voting is paused once the tile reaches *rank_target* (e.g. top 5) and
-    resumed when it falls below *rank_resume* (e.g. drops past 8th place).
-    The hysteresis avoids rapid toggling near the boundary.
+    Voters call :meth:`get_direction` which blocks until the gate decides
+    whether to vote ``"up"`` (climb/maintain), ``"down"`` (drop back), or
+    pause (``None`` internally — the caller blocks).
+
+    Strategy:
+    - rank > rank_target → vote **up**
+    - rank = rank_target and votes < (2nd-place votes - buffer) → vote **up**
+    - rank = rank_target and votes >= (2nd-place votes - buffer) → **pause**
+    - rank < rank_target → vote **down**
+    - rank > rank_resume (safety fallback) → vote **up**
     """
 
     def __init__(
         self,
         tile_id: str,
-        rank_target: int = 5,
-        rank_resume: int = 8,
+        rank_target: int = 3,
+        rank_resume: int = 5,
+        vote_buffer: int = 50,
     ) -> None:
         self.tile_id = tile_id
         self.rank_target = rank_target
         self.rank_resume = rank_resume
+        self.vote_buffer = vote_buffer
 
         self._rankings: dict[str, int] = {}
         self._position: int | None = None
+        self._direction: str | None = None
         self._lock = threading.Lock()
         self._event = threading.Event()
 
-        # Start open so voters can proceed before the first WS update arrives.
+        # Start with "up" so voters proceed before the first WS update.
+        self._direction = "up"
         self._event.set()
 
     @property
     def position(self) -> int | None:
         with self._lock:
             return self._position
+
+    def get_direction(self) -> str:
+        """Block until a vote direction is available, then return it."""
+        self._event.wait()
+
+        with self._lock:
+            # Direction could have been cleared between wait and lock.
+            if self._direction is not None:
+                return self._direction
+
+        # Rare race — re-wait.
+        return self.get_direction()
 
     def _recompute_position(self) -> int | None:
         """Derive the 1-based rank of the tracked tile from stored vote counts."""
@@ -57,38 +80,87 @@ class RankGate:
 
         return rank
 
+    def _get_nth_place_votes(self, n: int) -> int | None:
+        """Return the vote count of the tile at rank *n*, or None."""
+        sorted_counts = sorted(self._rankings.values(), reverse=True)
+
+        if n <= 0 or n > len(sorted_counts):
+            return None
+
+        return sorted_counts[n - 1]
+
+    def _compute_direction(self) -> str | None:
+        """Decide vote direction based on current rank and vote gap."""
+        pos = self._position
+
+        if pos is None:
+            return "up"
+
+        # Safety fallback: if we've fallen far, always vote up.
+        if pos > self.rank_resume:
+            return "up"
+
+        # Below target (rank number higher = worse position): vote up.
+        if pos > self.rank_target:
+            return "up"
+
+        # Above target (rank 1 or 2 when target is 3): vote down.
+        if pos < self.rank_target:
+            return "down"
+
+        # At target rank — check vote gap to the rank above.
+        above_rank = self.rank_target - 1
+        above_votes = self._get_nth_place_votes(above_rank)
+        our_votes = self._rankings.get(self.tile_id)
+
+        if above_votes is None or our_votes is None:
+            return "up"
+
+        if our_votes < above_votes - self.vote_buffer:
+            return "up"
+
+        # Close to the rank above — pause to avoid over-voting.
+        return None
+
     def update_rankings(self, tiles: dict[str, int]) -> None:
         """Merge a batch of tile vote counts and re-evaluate the gate."""
         with self._lock:
             self._rankings.update(tiles)
-            new_pos = self._recompute_position()
             old_pos = self._position
-            self._position = new_pos
+            self._position = self._recompute_position()
 
-        if new_pos is None:
+            old_dir = self._direction
+            self._direction = self._compute_direction()
+
+        if self._position is None:
             return
 
-        if new_pos <= self.rank_target:
-            if old_pos is None or old_pos > self.rank_target:
-                logger.warning(
-                    "Tile reached rank {} (<= target {}), pausing voting",
-                    new_pos,
-                    self.rank_target,
-                )
-            self._event.clear()
-
-        elif new_pos > self.rank_resume:
-            if old_pos is not None and old_pos <= self.rank_resume:
+        # Log direction changes.
+        if self._direction != old_dir:
+            if self._direction is None:
+                our = self._rankings.get(self.tile_id, 0)
+                above = self._get_nth_place_votes(self.rank_target - 1) or 0
                 logger.info(
-                    "Tile fell to rank {} (> resume {}), resuming voting",
-                    new_pos,
-                    self.rank_resume,
+                    "Rank #{}: pausing (votes={}, {}nd={}, buffer={})",
+                    self._position,
+                    our,
+                    self.rank_target - 1,
+                    above,
+                    self.vote_buffer,
                 )
-            self._event.set()
+            else:
+                logger.info(
+                    "Rank #{}: voting {} (was {})",
+                    self._position,
+                    self._direction,
+                    old_dir or "paused",
+                )
 
-    def wait(self) -> None:
-        """Block until voting is allowed."""
-        self._event.wait()
+        # Update the event to unblock/block waiting threads.
+        if self._direction is not None:
+            self._event.set()
+        else:
+            self._event.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -238,10 +310,10 @@ def start_monitor(gate: RankGate, user_agent: str) -> threading.Thread:
     thread.start()
 
     logger.info(
-        "Vote monitor started (tile={}, target=top {}, resume=below {})",
+        "Vote monitor started (tile={}, target=#{}, buffer={})",
         gate.tile_id[:8],
         gate.rank_target,
-        gate.rank_resume,
+        gate.vote_buffer,
     )
 
     return thread

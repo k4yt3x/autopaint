@@ -93,11 +93,11 @@ class Voter:
         self.tracker = tracker
         self.label = f"#{index:02d} {session_cookie[:8]}"
 
-    def _cast_vote(self) -> requests.Response:
+    def _cast_vote(self, direction: str = "up") -> requests.Response:
         return requests.put(
             self.url,
             headers=self.headers,
-            json={"direction": "up"},
+            json={"direction": direction},
             proxies=self.proxies,
             timeout=30,
         )
@@ -147,8 +147,10 @@ class Voter:
         )
 
         while True:
+            # Get vote direction from the gate (blocks if paused).
+            direction = "up"
             if self.gate is not None:
-                self.gate.wait()
+                direction = self.gate.get_direction()
 
             # Throttle across all threads via shared adaptive rate limiter.
             # acquire() returns a generation number; if a tile 429 bumps
@@ -161,7 +163,7 @@ class Voter:
                     continue
 
             try:
-                resp = self._cast_vote()
+                resp = self._cast_vote(direction)
                 body = resp.json()
 
             except requests.RequestException:
@@ -176,7 +178,7 @@ class Voter:
 
             if resp.status_code == 200:
                 remaining = body.get("vote_budget", {}).get("remaining", "?")
-                logger.info("[{}] Vote OK ({} remaining)", self.label, remaining)
+                logger.info("[{}] Vote {} OK ({} remaining)", self.label, direction, remaining)
 
                 if self.limiter is not None:
                     self.limiter.on_success()

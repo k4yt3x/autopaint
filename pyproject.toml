@@ -17,5 +17,11 @@ build-backend = "hatchling.build"
 [tool.hatch.version]
 path = "autopaint/__init__.py"
 
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
+]
+
 [project.scripts]
 autopaint = "autopaint.__main__:main"
