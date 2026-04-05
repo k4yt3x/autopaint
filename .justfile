@@ -2,9 +2,9 @@
 run *args:
     uv run python -m autopaint -v {{ args }}
 
-# Run with auto-rank holding target place
+# Run with auto-rank holding top 5, resume at 7
 run-hold *args:
-    uv run python -m autopaint -v --auto-rank {{ args }}
+    uv run python -m autopaint -v --auto-rank --rank-target 5 --rank-resume 7 {{ args }}
 
 # Run racing to #1 with vote buffer
 run-top1 *args:

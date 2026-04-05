@@ -126,6 +126,8 @@ class AdaptiveRateLimiter:
         Duplicate 429s arriving within :data:`COOLDOWN_SECONDS` of the last
         reduction are ignored to prevent compounding.
         """
+        should_pause = False
+
         with self._lock:
             now = time.monotonic()
 
@@ -136,6 +138,10 @@ class AdaptiveRateLimiter:
             self._rate = max(self._rate * MULTIPLICATIVE_DECREASE, self._min_rate)
             self._generation += 1
             self._next_token = now + PAUSE_SECONDS
+            should_pause = True
+
+            # Clear inside the lock so all threads see it immediately.
+            self._pause_event.clear()
 
             logger.warning(
                 "Tile rate limit hit, reducing to {:.2f} req/s, pausing {:.0f}s",
@@ -144,10 +150,9 @@ class AdaptiveRateLimiter:
             )
             self._last_log = now
 
-        # Block all threads (including those about to call acquire).
-        self._pause_event.clear()
-        time.sleep(PAUSE_SECONDS)
-        self._pause_event.set()
+        if should_pause:
+            time.sleep(PAUSE_SECONDS)
+            self._pause_event.set()
 
     def _maybe_log(self) -> None:
         """Log and persist the current rate periodically (caller must hold _lock)."""
