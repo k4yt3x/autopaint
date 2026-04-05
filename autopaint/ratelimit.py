@@ -107,6 +107,10 @@ class AdaptiveRateLimiter:
         with self._lock:
             return generation < self._generation
 
+    def wait_for_pause(self) -> None:
+        """Block until the current tile-limit pause expires (if any)."""
+        self._pause_event.wait()
+
     def on_success(self) -> None:
         """Called after a successful vote (HTTP 200). Gently increases rate."""
         with self._lock:

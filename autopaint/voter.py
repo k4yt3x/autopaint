@@ -226,6 +226,9 @@ class Voter:
                     self._wait_until_reset(body)
                 elif self.limiter is not None:
                     self.limiter.on_tile_limited()
+                    # Block until the pause expires so we don't retry
+                    # into the still-active tile rate limit window.
+                    self.limiter.wait_for_pause()
                 else:
                     time.sleep(
                         random.uniform(
