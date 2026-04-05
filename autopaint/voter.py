@@ -1,4 +1,5 @@
 import random
+import threading
 import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -32,6 +33,37 @@ TILE_BACKOFF_MIN_SECONDS = 10
 TILE_BACKOFF_MAX_SECONDS = 60
 
 
+class ActiveVoterTracker:
+    """Track how many voters are actively voting vs waiting on session cooldown.
+
+    When all voters are on cooldown, a warning is printed to tell the user
+    that more sessions are needed to maintain voting throughput.
+    """
+
+    def __init__(self, total: int) -> None:
+        self._total = total
+        self._active = total
+        self._lock = threading.Lock()
+        self._warned = False
+
+    def enter_cooldown(self) -> None:
+        with self._lock:
+            self._active -= 1
+
+            if self._active == 0 and not self._warned:
+                self._warned = True
+                logger.warning(
+                    "All {} sessions are on cooldown — "
+                    "add more sessions to maintain continuous voting",
+                    self._total,
+                )
+
+    def leave_cooldown(self) -> None:
+        with self._lock:
+            self._active += 1
+            self._warned = False
+
+
 class Voter:
     def __init__(
         self,
@@ -42,6 +74,7 @@ class Voter:
         proxy: str | None = None,
         gate: RankGate | None = None,
         limiter: AdaptiveRateLimiter | None = None,
+        tracker: ActiveVoterTracker | None = None,
     ) -> None:
         self.session_cookie = session_cookie
         self.tile_id = tile_id
@@ -57,6 +90,7 @@ class Voter:
         self.proxies = {"https": proxy} if proxy else None
         self.gate = gate
         self.limiter = limiter
+        self.tracker = tracker
         self.label = f"#{index:02d} {session_cookie[:8]}"
 
     def _cast_vote(self) -> requests.Response:
@@ -93,7 +127,14 @@ class Voter:
         """Sleep until the vote budget resets based on the response body."""
         wait = self._get_wait_seconds(body)
         logger.info("[{}] Waiting {:.0f}s until reset", self.label, wait)
+
+        if self.tracker is not None:
+            self.tracker.enter_cooldown()
+
         time.sleep(wait)
+
+        if self.tracker is not None:
+            self.tracker.leave_cooldown()
 
     def run(self) -> None:
         """Vote in a loop, respecting rate limits. Runs forever."""

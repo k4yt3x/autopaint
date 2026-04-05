@@ -4,7 +4,7 @@ import time
 from loguru import logger
 
 # AIMD parameters
-INITIAL_RATE = 3.5  # requests per second
+INITIAL_RATE = 6.0  # requests per second
 MIN_RATE = 0.2  # floor: 1 request per 5s
 MAX_RATE = 20.0  # ceiling
 ADDITIVE_INCREASE = 0.02  # req/s added per success
