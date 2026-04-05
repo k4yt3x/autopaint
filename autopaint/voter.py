@@ -8,6 +8,7 @@ import requests
 from loguru import logger
 
 from autopaint.ratelimit import AdaptiveRateLimiter
+from autopaint.store import Store
 from autopaint.useragent import build_extra_headers
 
 if TYPE_CHECKING:
@@ -75,6 +76,7 @@ class Voter:
         gate: RankGate | None = None,
         limiter: AdaptiveRateLimiter | None = None,
         tracker: ActiveVoterTracker | None = None,
+        store: Store | None = None,
     ) -> None:
         self.session_cookie = session_cookie
         self.tile_id = tile_id
@@ -91,6 +93,7 @@ class Voter:
         self.gate = gate
         self.limiter = limiter
         self.tracker = tracker
+        self.store = store
         self.label = f"#{index:02d} {session_cookie[:8]}"
 
     def _cast_vote(self, direction: str = "up") -> requests.Response:
@@ -128,6 +131,11 @@ class Voter:
         wait = self._get_wait_seconds(body)
         logger.info("[{}] Waiting {:.0f}s until reset", self.label, wait)
 
+        # Persist the reset_at so restarts can skip re-discovery.
+        reset_at = body.get("vote_budget", {}).get("reset_at")
+        if self.store is not None and reset_at:
+            self.store.set_cooldown(self.session_cookie, reset_at)
+
         if self.tracker is not None:
             self.tracker.enter_cooldown()
 
@@ -135,6 +143,9 @@ class Voter:
 
         if self.tracker is not None:
             self.tracker.leave_cooldown()
+
+        if self.store is not None:
+            self.store.clear_cooldown(self.session_cookie)
 
     def run(self) -> None:
         """Vote in a loop, respecting rate limits. Runs forever."""
@@ -145,6 +156,27 @@ class Voter:
             self.label,
             self.proxies.get("https") if self.proxies else "none",
         )
+
+        # Resume cooldown from a previous run if stored.
+        if self.store is not None:
+            remaining = self.store.get_cooldown_remaining(self.session_cookie)
+
+            if remaining > 0:
+                logger.info(
+                    "[{}] Resuming cooldown from previous run ({:.0f}s)",
+                    self.label,
+                    remaining,
+                )
+
+                if self.tracker is not None:
+                    self.tracker.enter_cooldown()
+
+                time.sleep(remaining)
+
+                if self.tracker is not None:
+                    self.tracker.leave_cooldown()
+
+                self.store.clear_cooldown(self.session_cookie)
 
         while True:
             # Get vote direction from the gate (blocks if paused).

@@ -11,3 +11,6 @@ wheels/
 
 # Session cookies (contains secrets)
 data/cookies.json
+
+# SQLite database
+data/*.db

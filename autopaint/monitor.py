@@ -126,7 +126,6 @@ class RankGate:
         """Merge a batch of tile vote counts and re-evaluate the gate."""
         with self._lock:
             self._rankings.update(tiles)
-            old_pos = self._position
             self._position = self._recompute_position()
 
             old_dir = self._direction

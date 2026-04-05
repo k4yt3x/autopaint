@@ -6,6 +6,10 @@ run *args:
 run-verbose *args:
     uv run python -m autopaint -v {{args}}
 
+# Run with auto-rank holding 3rd place
+run-hold *args:
+    uv run python -m autopaint -v --auto-rank {{args}}
+
 # Install/sync dependencies
 sync:
     uv sync

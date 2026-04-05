@@ -8,6 +8,7 @@ from loguru import logger
 
 from autopaint.proxy import fetch_proxies
 from autopaint.ratelimit import AdaptiveRateLimiter
+from autopaint.store import Store
 from autopaint.useragent import fetch_user_agents
 from autopaint.voter import Voter
 
@@ -45,7 +46,7 @@ def main() -> None:
     parser.add_argument(
         "--auto-rank",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help="automatically pause/resume voting based on tile ranking",
     )
     parser.add_argument(
@@ -57,7 +58,7 @@ def main() -> None:
     parser.add_argument(
         "--rank-resume",
         type=int,
-        default=5,
+        default=4,
         help="resume voting when tile falls below this rank",
     )
     parser.add_argument(
@@ -100,7 +101,8 @@ def main() -> None:
         )
         start_monitor(gate, random.choice(user_agents))
 
-    limiter = AdaptiveRateLimiter()
+    store = Store()
+    limiter = AdaptiveRateLimiter(store=store)
     threads: list[threading.Thread] = []
 
     for index, session_cookie in enumerate(sessions, start=1):
@@ -114,6 +116,7 @@ def main() -> None:
             proxy=proxy,
             gate=gate,
             limiter=limiter,
+            store=store,
         )
         thread = threading.Thread(target=voter.run, daemon=True)
         thread.start()
@@ -127,6 +130,7 @@ def main() -> None:
 
     except KeyboardInterrupt:
         logger.info("Interrupted, shutting down")
+        store.close()
         sys.exit(0)
 
 

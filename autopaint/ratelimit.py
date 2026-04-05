@@ -1,7 +1,11 @@
 import threading
 import time
+from typing import TYPE_CHECKING
 
 from loguru import logger
+
+if TYPE_CHECKING:
+    from autopaint.store import Store
 
 # AIMD parameters
 INITIAL_RATE = 6.0  # requests per second
@@ -36,10 +40,27 @@ class AdaptiveRateLimiter:
         initial_rate: float = INITIAL_RATE,
         min_rate: float = MIN_RATE,
         max_rate: float = MAX_RATE,
+        store: "Store | None" = None,
     ) -> None:
-        self._rate = initial_rate  # tokens per second
         self._min_rate = min_rate
         self._max_rate = max_rate
+        self._store = store
+
+        # Try to restore the learned rate from a previous run.
+        restored = None
+        if store is not None:
+            raw = store.get_value("learned_rate")
+            if raw is not None:
+                try:
+                    restored = max(min_rate, min(float(raw), max_rate))
+                except ValueError:
+                    pass
+
+        if restored is not None:
+            self._rate = restored
+            logger.info("Restored learned rate: {:.2f} req/s", restored)
+        else:
+            self._rate = initial_rate
 
         self._lock = threading.Lock()
         self._next_token: float = time.monotonic()
@@ -125,9 +146,12 @@ class AdaptiveRateLimiter:
         self._pause_event.set()
 
     def _maybe_log(self) -> None:
-        """Log the current rate periodically (caller must hold _lock)."""
+        """Log and persist the current rate periodically (caller must hold _lock)."""
         now = time.monotonic()
 
         if now - self._last_log >= LOG_INTERVAL_SECONDS:
             logger.info("Adaptive rate: {:.2f} req/s", self._rate)
             self._last_log = now
+
+            if self._store is not None:
+                self._store.set_value("learned_rate", f"{self._rate:.4f}")
