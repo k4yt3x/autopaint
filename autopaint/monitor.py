@@ -111,7 +111,9 @@ async def _monitor_loop(gate: RankGate, user_agent: str) -> None:
             ) as ws:
                 # Centrifugo connect handshake
                 await ws.send(json.dumps({"id": 1, "connect": {}}))
-                connect_raw = await asyncio.wait_for(ws.recv(), timeout=10)
+                connect_raw = str(
+                    await asyncio.wait_for(ws.recv(), timeout=10)
+                )
                 connect_resp = json.loads(connect_raw.split("\n")[0])
                 ping_interval = connect_resp.get("connect", {}).get(
                     "ping", PING_INTERVAL_SECONDS
@@ -124,8 +126,10 @@ async def _monitor_loop(gate: RankGate, user_agent: str) -> None:
                 )
 
                 while True:
-                    raw = await asyncio.wait_for(
-                        ws.recv(), timeout=ping_interval + 10
+                    raw = str(
+                        await asyncio.wait_for(
+                            ws.recv(), timeout=ping_interval + 10
+                        )
                     )
 
                     # Centrifugo may batch multiple JSON objects in one
