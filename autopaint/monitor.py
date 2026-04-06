@@ -121,7 +121,8 @@ class RankGate:
         return "up"
 
     def _compute_direction_hold(self) -> str | None:
-        """Hold strategy: stabilize at rank_target, vote down if above."""
+        """Hold strategy: stabilize at rank_target by targeting the midpoint
+        between the tiles above and below."""
         pos = self._position
 
         if pos is None:
@@ -139,18 +140,30 @@ class RankGate:
         if pos < self.rank_target:
             return "down"
 
-        # At target rank — check vote gap to the rank above.
-        above_rank = self.rank_target - 1
-        above_votes = self._get_nth_place_votes(above_rank)
+        # At target rank — aim for midpoint between neighbors.
+        above_votes = self._get_nth_place_votes(self.rank_target - 1)
+        below_votes = self._get_nth_place_votes(self.rank_target + 1)
         our_votes = self._rankings.get(self.tile_id)
 
-        if above_votes is None or our_votes is None:
+        if our_votes is None:
             return "up"
 
-        if our_votes < above_votes - self.vote_buffer:
+        # Fall back to buffer-from-above if neighbors are unavailable.
+        if above_votes is None or below_votes is None:
+            if above_votes is not None and our_votes < above_votes - self.vote_buffer:
+                return "up"
+            return None
+
+        midpoint = (above_votes + below_votes) / 2
+        spread = above_votes - below_votes
+        tolerance = max(self.vote_buffer, spread * 0.015)
+
+        if our_votes < midpoint - tolerance:
             return "up"
 
-        # Close to the rank above — pause to avoid over-voting.
+        if our_votes > midpoint + tolerance:
+            return "down"
+
         return None
 
     def update_rankings(self, tiles: dict[str, int]) -> None:
@@ -169,16 +182,28 @@ class RankGate:
         if self._direction != old_dir:
             if self._direction is None:
                 our = self._rankings.get(self.tile_id, 0)
-                above_rank = self.rank_target - 1
-                above = self._get_nth_place_votes(above_rank) or 0
-                logger.info(
-                    "Rank #{}: pausing (votes={}, #{}={}, buffer={})",
-                    self._position,
-                    our,
-                    above_rank,
-                    above,
-                    self.vote_buffer,
-                )
+                above = self._get_nth_place_votes(self.rank_target - 1)
+                below = self._get_nth_place_votes(self.rank_target + 1)
+
+                if above is not None and below is not None:
+                    mid = (above + below) / 2
+                    spread = above - below
+                    tol = max(self.vote_buffer, spread * 0.015)
+                    logger.info(
+                        "Rank #{}: pausing (votes={}, midpoint={:.0f}, ±{:.0f})",
+                        self._position,
+                        our,
+                        mid,
+                        tol,
+                    )
+                else:
+                    logger.info(
+                        "Rank #{}: pausing (votes={}, #{}={})",
+                        self._position,
+                        our,
+                        self.rank_target - 1,
+                        above or "?",
+                    )
             else:
                 logger.info(
                     "Rank #{}: voting {} (was {})",

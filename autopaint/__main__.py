@@ -70,8 +70,8 @@ def main() -> None:
     parser.add_argument(
         "--vote-buffer",
         type=int,
-        default=50,
-        help="vote gap to maintain below the rank above target",
+        default=10,
+        help="tolerance (±) around the midpoint between neighbors",
     )
     parser.add_argument(
         "-v",

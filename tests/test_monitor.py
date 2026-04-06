@@ -56,23 +56,58 @@ class TestRankGateDirection:
         assert gate.position == 5
         assert gate.get_direction() == "up"
 
-    def test_at_target_big_gap_votes_up(self):
-        gate = self._make_gate(vote_buffer=50)
+    def test_at_target_below_midpoint_votes_up(self):
+        gate = self._make_gate(vote_buffer=10)
+        # 2nd=900, 4th=700 → spread=200, 5%=10, midpoint=800
+        # tolerance = max(10, 10) = 10, zone=790..810
+        # tile-a=750 < 790 → up
         gate.update_rankings({
-            "tile-x": 1000, "tile-y": 900, "tile-a": 800,
+            "tile-x": 1000, "tile-y": 900, "tile-a": 750, "tile-w": 700,
         })
-        # gap = 900 - 800 = 100 > buffer 50 → vote up
         assert gate.position == 3
         assert gate.get_direction() == "up"
 
-    def test_at_target_close_to_above_pauses(self):
-        gate = self._make_gate(vote_buffer=50)
+    def test_at_target_above_midpoint_votes_down(self):
+        gate = self._make_gate(vote_buffer=10)
+        # 2nd=900, 4th=700 → midpoint=800, tolerance=10
+        # tile-a=850 > 810 → down
         gate.update_rankings({
-            "tile-x": 1000, "tile-y": 900, "tile-a": 860,
+            "tile-x": 1000, "tile-y": 900, "tile-a": 850, "tile-w": 700,
         })
-        # gap = 900 - 860 = 40 < buffer 50 → pause
+        assert gate.position == 3
+        assert gate.get_direction() == "down"
+
+    def test_at_target_near_midpoint_pauses(self):
+        gate = self._make_gate(vote_buffer=10)
+        # 2nd=900, 4th=700 → midpoint=800, tolerance=10, zone=790..810
+        # tile-a=800 within zone → pause
+        gate.update_rankings({
+            "tile-x": 1000, "tile-y": 900, "tile-a": 800, "tile-w": 700,
+        })
         assert gate.position == 3
         assert not gate._event.is_set()
+
+    def test_percentage_tolerance_for_large_spread(self):
+        gate = self._make_gate(vote_buffer=10)
+        # 2nd=68000, 4th=59500 → spread=8500, 1.5%=127.5
+        # tolerance = max(10, 127.5) = 127.5, midpoint=63750
+        # zone ≈ 63622..63878
+        gate.update_rankings({
+            "tile-1": 70000, "tile-2": 68000, "tile-a": 63750, "tile-4": 59500,
+        })
+        # 63750 is inside zone → pause
+        assert gate.position == 3
+        assert not gate._event.is_set()
+
+    def test_percentage_tolerance_outside_zone(self):
+        gate = self._make_gate(vote_buffer=10)
+        # spread=8500, tolerance≈127.5, midpoint=63750, zone≈63622..63878
+        gate.update_rankings({
+            "tile-1": 70000, "tile-2": 68000, "tile-a": 63500, "tile-4": 59500,
+        })
+        # 63500 < 63622 → up
+        assert gate.position == 3
+        assert gate.get_direction() == "up"
 
     def test_above_target_votes_down(self):
         gate = self._make_gate()
@@ -90,32 +125,35 @@ class TestRankGateDirection:
         assert gate.position == 2
         assert gate.get_direction() == "down"
 
-    def test_at_exact_buffer_boundary_pauses(self):
-        gate = self._make_gate(vote_buffer=50)
+    def test_at_exact_tolerance_boundary_pauses(self):
+        gate = self._make_gate(vote_buffer=10)
+        # 2nd=900, 4th=700 → spread=200, tolerance=max(10,10)=10
+        # midpoint=800, tile-a=790 = midpoint-10 → inside zone → pause
         gate.update_rankings({
-            "tile-x": 1000, "tile-y": 900, "tile-a": 850,
+            "tile-x": 1000, "tile-y": 900, "tile-a": 790, "tile-w": 700,
         })
-        # gap = 900 - 850 = 50, NOT < buffer → pause
         assert gate.position == 3
         assert not gate._event.is_set()
 
-    def test_resume_after_gap_opens(self):
-        gate = self._make_gate(vote_buffer=50)
+    def test_resume_when_midpoint_shifts(self):
+        gate = self._make_gate(vote_buffer=10)
 
-        # Initially paused.
+        # Initially paused at midpoint.
+        # 2nd=900, 4th=700 → midpoint=800, tolerance=10
         gate.update_rankings({
-            "tile-x": 1000, "tile-y": 900, "tile-a": 860,
+            "tile-x": 1000, "tile-y": 900, "tile-a": 800, "tile-w": 700,
         })
         assert not gate._event.is_set()
 
-        # 2nd place gains votes, gap opens.
-        gate.update_rankings({"tile-y": 950})
-        # gap = 950 - 860 = 90 > buffer 50 → resume up
+        # 4th place drops to 600: midpoint=(900+600)/2=750
+        # spread=300, 1.5%=4.5, tolerance=max(10,4.5)=10
+        # tile-a=800 > 750+10=760 → vote down
+        gate.update_rankings({"tile-w": 600})
         assert gate._event.is_set()
-        assert gate.get_direction() == "up"
+        assert gate.get_direction() == "down"
 
     def test_safety_resume_fallback(self):
-        gate = RankGate("tile-a", rank_target=3, rank_resume=5, vote_buffer=50)
+        gate = RankGate("tile-a", rank_target=3, rank_resume=5, vote_buffer=10)
         gate.update_rankings({
             "tile-1": 1000, "tile-2": 900, "tile-3": 800,
             "tile-4": 700, "tile-5": 600, "tile-a": 500,
@@ -123,6 +161,25 @@ class TestRankGateDirection:
         assert gate.position == 6
         # Beyond rank_resume (5), always vote up.
         assert gate.get_direction() == "up"
+
+    def test_no_below_neighbor_falls_back_to_buffer(self):
+        gate = self._make_gate(vote_buffer=10)
+        # Only 2 tiles total, no 4th place neighbor.
+        gate.update_rankings({
+            "tile-x": 1000, "tile-y": 900, "tile-a": 800,
+        })
+        assert gate.position == 3
+        # Falls back: above=900, our=800 < 900-10 → up
+        assert gate.get_direction() == "up"
+
+    def test_no_below_neighbor_close_to_above_pauses(self):
+        gate = self._make_gate(vote_buffer=10)
+        gate.update_rankings({
+            "tile-x": 1000, "tile-y": 900, "tile-a": 895,
+        })
+        assert gate.position == 3
+        # Falls back: above=900, our=895 >= 900-10 → pause
+        assert not gate._event.is_set()
 
 
 # ---------------------------------------------------------------------------
