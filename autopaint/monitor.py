@@ -169,12 +169,13 @@ class RankGate:
         if self._direction != old_dir:
             if self._direction is None:
                 our = self._rankings.get(self.tile_id, 0)
-                above = self._get_nth_place_votes(self.rank_target - 1) or 0
+                above_rank = self.rank_target - 1
+                above = self._get_nth_place_votes(above_rank) or 0
                 logger.info(
-                    "Rank #{}: pausing (votes={}, {}nd={}, buffer={})",
+                    "Rank #{}: pausing (votes={}, #{}={}, buffer={})",
                     self._position,
                     our,
-                    self.rank_target - 1,
+                    above_rank,
                     above,
                     self.vote_buffer,
                 )
