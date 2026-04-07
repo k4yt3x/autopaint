@@ -43,12 +43,14 @@ class RankGate:
         rank_resume: int = 5,
         vote_buffer: int = 50,
         top1: bool = False,
+        passthrough: bool = False,
     ) -> None:
         self.tile_id = tile_id
         self.rank_target = rank_target
         self.rank_resume = rank_resume
         self.vote_buffer = vote_buffer
         self.top1 = top1
+        self.passthrough = passthrough
 
         self._rankings: dict[str, int] = {}
         self._position: int | None = None
@@ -125,6 +127,9 @@ class RankGate:
         """Decide vote direction based on current rank and vote gap."""
         if self._stall_paused:
             return None
+
+        if self.passthrough:
+            return "up"
 
         if self.top1:
             return self._compute_direction_top1()

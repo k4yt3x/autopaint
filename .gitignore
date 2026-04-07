@@ -9,8 +9,5 @@ wheels/
 # Virtual environments
 .venv
 
-# Session cookies (contains secrets)
-data/cookies.json
-
-# SQLite database
-data/*.db
+# Temporary data
+data/

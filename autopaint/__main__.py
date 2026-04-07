@@ -4,6 +4,7 @@ import random
 import resource
 import sys
 import threading
+from pathlib import Path
 
 from loguru import logger
 
@@ -28,6 +29,11 @@ def main() -> None:
         help="path to cookies JSON file",
     )
     parser.add_argument(
+        "--db",
+        default="data/autopaint.db",
+        help="path to SQLite database file",
+    )
+    parser.add_argument(
         "-t",
         "--tile-id",
         default=DEFAULT_TILE_ID,
@@ -45,7 +51,7 @@ def main() -> None:
     parser.add_argument(
         "--proxy-country",
         nargs="+",
-        default=["us", "ca", "mx"],
+        default=["us", "ca"],
         help="Mullvad proxy country codes",
     )
     parser.add_argument(
@@ -93,6 +99,12 @@ def main() -> None:
         "--no-ratelimit",
         action="store_true",
         help="disable all rate limiting and vote as fast as possible",
+    )
+    parser.add_argument(
+        "--direction",
+        choices=["up", "down"],
+        default=None,
+        help="force vote direction (overrides auto-rank strategy)",
     )
     parser.add_argument(
         "-v",
@@ -151,12 +163,12 @@ def main() -> None:
         )
         start_monitor(gate, monitor_ua)
     else:
-        # No rank strategy, but still monitor for stall detection.
-        gate = RankGate(args.tile_id)
+        # No rank strategy — passthrough gate only used for stall detection.
+        gate = RankGate(args.tile_id, passthrough=True)
         start_ws_monitor(gate, monitor_ua)
         start_stall_detector(gate)
 
-    store = Store()
+    store = Store(Path(args.db))
 
     if args.no_ratelimit or args.no_throttle:
         limiter = None
@@ -186,6 +198,7 @@ def main() -> None:
             tracker=tracker,
             store=store,
             no_ratelimit=args.no_ratelimit,
+            forced_direction=args.direction,
         )
         thread = threading.Thread(target=voter.run, daemon=True)
         thread.start()

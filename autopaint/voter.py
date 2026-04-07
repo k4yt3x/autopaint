@@ -78,6 +78,7 @@ class Voter:
         tracker: ActiveVoterTracker | None = None,
         store: Store | None = None,
         no_ratelimit: bool = False,
+        forced_direction: str | None = None,
     ) -> None:
         self.session_cookie = session_cookie
         self.tile_id = tile_id
@@ -95,6 +96,7 @@ class Voter:
         self.tracker = tracker
         self.store = store
         self.no_ratelimit = no_ratelimit
+        self.forced_direction = forced_direction
         self.label = f"#{index:02d} {session_cookie[:8]}"
 
         # Persistent session reuses TCP connections (fewer file descriptors).
@@ -188,10 +190,14 @@ class Voter:
                 self.store.clear_cooldown(self.session_cookie)
 
         while True:
-            # Get vote direction from the gate (blocks if paused).
-            direction = "up"
+            # Wait on the gate (blocks during stall pauses and rank holds).
             if self.gate is not None:
-                direction = self.gate.get_direction()
+                gate_direction = self.gate.get_direction()
+            else:
+                gate_direction = "up"
+
+            # Forced direction overrides the gate's strategy decision.
+            direction = self.forced_direction or gate_direction
 
             # Throttle across all threads via shared adaptive rate limiter.
             # acquire() returns a generation number; if a tile 429 bumps
