@@ -77,6 +77,7 @@ class Voter:
         limiter: AdaptiveRateLimiter | None = None,
         tracker: ActiveVoterTracker | None = None,
         store: Store | None = None,
+        no_ratelimit: bool = False,
     ) -> None:
         self.session_cookie = session_cookie
         self.tile_id = tile_id
@@ -94,6 +95,7 @@ class Voter:
         self.limiter = limiter
         self.tracker = tracker
         self.store = store
+        self.no_ratelimit = no_ratelimit
         self.label = f"#{index:02d} {session_cookie[:8]}"
 
     def _cast_vote(self, direction: str = "up") -> requests.Response:
@@ -128,6 +130,9 @@ class Voter:
 
     def _wait_until_reset(self, body: dict) -> None:
         """Sleep until the vote budget resets based on the response body."""
+        if self.no_ratelimit:
+            return
+
         wait = self._get_wait_seconds(body)
         logger.info("[{}] Waiting {:.0f}s until reset", self.label, wait)
 
@@ -224,6 +229,8 @@ class Voter:
 
                 if "vote_budget" in body:
                     self._wait_until_reset(body)
+                elif self.no_ratelimit:
+                    pass
                 elif self.limiter is not None:
                     self.limiter.on_tile_limited()
                     # Block until the pause expires so we don't retry

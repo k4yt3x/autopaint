@@ -74,6 +74,11 @@ def main() -> None:
         help="tolerance (±) around the midpoint between neighbors",
     )
     parser.add_argument(
+        "--no-ratelimit",
+        action="store_true",
+        help="disable all rate limiting and vote as fast as possible",
+    )
+    parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -112,7 +117,7 @@ def main() -> None:
         start_monitor(gate, random.choice(user_agents))
 
     store = Store()
-    limiter = AdaptiveRateLimiter(store=store)
+    limiter = None if args.no_ratelimit else AdaptiveRateLimiter(store=store)
     threads: list[threading.Thread] = []
 
     for index, session_cookie in enumerate(sessions, start=1):
@@ -127,6 +132,7 @@ def main() -> None:
             gate=gate,
             limiter=limiter,
             store=store,
+            no_ratelimit=args.no_ratelimit,
         )
         thread = threading.Thread(target=voter.run, daemon=True)
         thread.start()

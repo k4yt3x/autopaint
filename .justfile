@@ -10,6 +10,10 @@ run-hold *args:
 run-top1 *args:
     uv run python -m autopaint -v --top1 {{ args }}
 
+# Run with no rate limiting (spam mode)
+run-spam *args:
+    uv run python -m autopaint -v --no-ratelimit --no-auto-rank {{ args }}
+
 # Install/sync dependencies
 sync:
     uv sync
