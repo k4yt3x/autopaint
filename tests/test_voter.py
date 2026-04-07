@@ -23,11 +23,11 @@ class TestVoterInit:
 
     def test_proxy_none(self):
         voter = Voter(1, "abc", "UA", "tile-001")
-        assert voter.proxies is None
+        assert "https" not in voter._session.proxies
 
     def test_proxy_set(self):
         voter = Voter(1, "abc", "UA", "tile-001", proxy="socks5://proxy:1080")
-        assert voter.proxies == {"https": "socks5://proxy:1080"}
+        assert voter._session.proxies["https"] == "socks5://proxy:1080"
 
 
 # ---------------------------------------------------------------------------
@@ -36,37 +36,31 @@ class TestVoterInit:
 
 
 class TestCastVote:
-    @patch("autopaint.voter.requests.put")
-    def test_default_direction_up(self, mock_put):
-        mock_resp = MagicMock()
-        mock_put.return_value = mock_resp
-
+    def test_default_direction_up(self):
         voter = Voter(1, "abc", "UA", "tile-001")
+        voter._session.put = MagicMock()
+
         voter._cast_vote()
 
-        call_kwargs = mock_put.call_args
+        call_kwargs = voter._session.put.call_args
         assert call_kwargs.kwargs["json"] == {"direction": "up"}
 
-    @patch("autopaint.voter.requests.put")
-    def test_custom_direction_down(self, mock_put):
-        mock_resp = MagicMock()
-        mock_put.return_value = mock_resp
-
+    def test_custom_direction_down(self):
         voter = Voter(1, "abc", "UA", "tile-001")
+        voter._session.put = MagicMock()
+
         voter._cast_vote("down")
 
-        call_kwargs = mock_put.call_args
+        call_kwargs = voter._session.put.call_args
         assert call_kwargs.kwargs["json"] == {"direction": "down"}
 
-    @patch("autopaint.voter.requests.put")
-    def test_url_uses_tile_id(self, mock_put):
-        mock_resp = MagicMock()
-        mock_put.return_value = mock_resp
-
+    def test_url_uses_tile_id(self):
         voter = Voter(1, "abc", "UA", "my-tile-id")
+        voter._session.put = MagicMock()
+
         voter._cast_vote()
 
-        call_args = mock_put.call_args
+        call_args = voter._session.put.call_args
         assert "my-tile-id" in call_args.args[0]
 
 
@@ -125,20 +119,19 @@ class TestGetWaitSeconds:
 
 class TestVoterRun:
     @patch("autopaint.voter.time.sleep")
-    @patch("autopaint.voter.requests.put")
-    def test_successful_vote_calls_limiter(self, mock_put, mock_sleep):
+    def test_successful_vote_calls_limiter(self, mock_sleep):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {
             "vote_budget": {"remaining": 5}
         }
-        mock_put.return_value = mock_resp
 
         limiter = MagicMock()
         limiter.acquire.return_value = 0
         limiter.is_stale.return_value = False
 
         voter = Voter(1, "abc", "UA", "tile-001", limiter=limiter)
+        voter._session.put = MagicMock(return_value=mock_resp)
 
         # Run one iteration then stop.
         call_count = 0
@@ -161,20 +154,19 @@ class TestVoterRun:
         limiter.on_success.assert_called_once()
 
     @patch("autopaint.voter.time.sleep")
-    @patch("autopaint.voter.requests.put")
-    def test_tile_429_calls_limiter_on_tile_limited(self, mock_put, mock_sleep):
+    def test_tile_429_calls_limiter_on_tile_limited(self, mock_sleep):
         mock_resp = MagicMock()
         mock_resp.status_code = 429
         mock_resp.json.return_value = {
             "error": "tile vote rate limit exceeded"
         }
-        mock_put.return_value = mock_resp
 
         limiter = MagicMock()
         limiter.acquire.return_value = 0
         limiter.is_stale.return_value = False
 
         voter = Voter(1, "abc", "UA", "tile-001", limiter=limiter)
+        voter._session.put = MagicMock(return_value=mock_resp)
 
         call_count = 0
         original_cast = voter._cast_vote
@@ -196,12 +188,10 @@ class TestVoterRun:
         limiter.on_tile_limited.assert_called_once()
 
     @patch("autopaint.voter.time.sleep")
-    @patch("autopaint.voter.requests.put")
-    def test_gate_direction_passed_to_cast_vote(self, mock_put, mock_sleep):
+    def test_gate_direction_passed_to_cast_vote(self, mock_sleep):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"vote_budget": {"remaining": 5}}
-        mock_put.return_value = mock_resp
 
         gate = MagicMock()
         gate.get_direction.return_value = "down"
@@ -211,6 +201,7 @@ class TestVoterRun:
         limiter.is_stale.return_value = False
 
         voter = Voter(1, "abc", "UA", "tile-001", gate=gate, limiter=limiter)
+        voter._session.put = MagicMock(return_value=mock_resp)
 
         call_count = 0
         original_cast = voter._cast_vote
@@ -230,7 +221,7 @@ class TestVoterRun:
             pass
 
         # Verify the PUT was called with "down".
-        call_kwargs = mock_put.call_args
+        call_kwargs = voter._session.put.call_args
         assert call_kwargs.kwargs["json"] == {"direction": "down"}
 
 

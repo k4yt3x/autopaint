@@ -90,7 +90,6 @@ class Voter:
             "Cookie": f"session={session_cookie}",
         }
 
-        self.proxies = {"https": proxy} if proxy else None
         self.gate = gate
         self.limiter = limiter
         self.tracker = tracker
@@ -98,12 +97,17 @@ class Voter:
         self.no_ratelimit = no_ratelimit
         self.label = f"#{index:02d} {session_cookie[:8]}"
 
+        # Persistent session reuses TCP connections (fewer file descriptors).
+        self._session = requests.Session()
+        self._session.headers.update(self.headers)
+
+        if proxy:
+            self._session.proxies.update({"https": proxy})
+
     def _cast_vote(self, direction: str = "up") -> requests.Response:
-        return requests.put(
+        return self._session.put(
             self.url,
-            headers=self.headers,
             json={"direction": direction},
-            proxies=self.proxies,
             timeout=30,
         )
 
@@ -159,7 +163,7 @@ class Voter:
         logger.debug(
             "[{}] Proxy: {}",
             self.label,
-            self.proxies.get("https") if self.proxies else "none",
+            self._session.proxies.get("https", "none"),
         )
 
         # Resume cooldown from a previous run if stored.

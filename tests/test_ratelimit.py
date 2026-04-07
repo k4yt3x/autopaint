@@ -28,9 +28,14 @@ class TestOnSuccess:
         assert limiter.rate == 1.0 + ADDITIVE_INCREASE
 
     def test_rate_capped_at_max(self):
-        limiter = AdaptiveRateLimiter(initial_rate=MAX_RATE)
+        limiter = AdaptiveRateLimiter(initial_rate=10.0, max_rate=10.0)
         limiter.on_success()
-        assert limiter.rate == MAX_RATE
+        assert limiter.rate == 10.0
+
+    def test_rate_uncapped_when_max_disabled(self):
+        limiter = AdaptiveRateLimiter(initial_rate=100.0, max_rate=-1)
+        limiter.on_success()
+        assert limiter.rate == 100.0 + ADDITIVE_INCREASE
 
 
 class TestOnTileLimited:
@@ -43,10 +48,17 @@ class TestOnTileLimited:
 
     @patch("autopaint.ratelimit.time.sleep")
     def test_rate_floored_at_min(self, mock_sleep):
-        limiter = AdaptiveRateLimiter(initial_rate=MIN_RATE)
+        limiter = AdaptiveRateLimiter(initial_rate=0.5, min_rate=0.5)
         limiter.on_tile_limited()
 
-        assert limiter.rate == MIN_RATE
+        assert limiter.rate == 0.5
+
+    @patch("autopaint.ratelimit.time.sleep")
+    def test_rate_no_floor_when_min_disabled(self, mock_sleep):
+        limiter = AdaptiveRateLimiter(initial_rate=0.01, min_rate=-1)
+        limiter.on_tile_limited()
+
+        assert limiter.rate == 0.01 * MULTIPLICATIVE_DECREASE
 
     @patch("autopaint.ratelimit.time.sleep")
     @patch("autopaint.ratelimit.time.monotonic")

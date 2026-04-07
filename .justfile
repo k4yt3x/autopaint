@@ -10,7 +10,11 @@ run-hold *args:
 run-top1 *args:
     uv run python -m autopaint -v --top1 {{ args }}
 
-# Run with no rate limiting (spam mode)
+# Run without throttle (respects 429s and cooldowns)
+run-fast *args:
+    uv run python -m autopaint -v --no-throttle {{ args }}
+
+# Run with no rate limiting (spam mode, ignores everything)
 run-spam *args:
     uv run python -m autopaint -v --no-ratelimit --no-auto-rank {{ args }}
 

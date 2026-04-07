@@ -9,8 +9,8 @@ if TYPE_CHECKING:
 
 # AIMD parameters
 INITIAL_RATE = 6.0  # requests per second
-MIN_RATE = 0.2  # floor: 1 request per 5s
-MAX_RATE = 20.0  # ceiling
+MIN_RATE = -1  # -1 = no floor
+MAX_RATE = 5  # -1 = no ceiling
 ADDITIVE_INCREASE = 0.02  # req/s added per success
 MULTIPLICATIVE_DECREASE = 0.7  # reduce to 70% on a 429 burst
 COOLDOWN_SECONDS = 30.0  # ignore duplicate 429s within this window
@@ -52,7 +52,14 @@ class AdaptiveRateLimiter:
             raw = store.get_value("learned_rate")
             if raw is not None:
                 try:
-                    restored = max(min_rate, min(float(raw), max_rate))
+                    val = float(raw)
+
+                    if min_rate > 0:
+                        val = max(val, min_rate)
+                    if max_rate > 0:
+                        val = min(val, max_rate)
+
+                    restored = val
                 except ValueError:
                     pass
 
@@ -114,7 +121,11 @@ class AdaptiveRateLimiter:
     def on_success(self) -> None:
         """Called after a successful vote (HTTP 200). Gently increases rate."""
         with self._lock:
-            self._rate = min(self._rate + ADDITIVE_INCREASE, self._max_rate)
+            self._rate += ADDITIVE_INCREASE
+
+            if self._max_rate > 0:
+                self._rate = min(self._rate, self._max_rate)
+
             self._maybe_log()
 
     def on_tile_limited(self) -> None:
@@ -135,7 +146,10 @@ class AdaptiveRateLimiter:
                 return
 
             self._last_decrease = now
-            self._rate = max(self._rate * MULTIPLICATIVE_DECREASE, self._min_rate)
+            self._rate *= MULTIPLICATIVE_DECREASE
+
+            if self._min_rate > 0:
+                self._rate = max(self._rate, self._min_rate)
             self._generation += 1
             self._next_token = now + PAUSE_SECONDS
             should_pause = True

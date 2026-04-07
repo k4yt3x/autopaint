@@ -1,6 +1,7 @@
 import argparse
 import json
 import random
+import resource
 import sys
 import threading
 
@@ -10,7 +11,7 @@ from autopaint.proxy import fetch_proxies
 from autopaint.ratelimit import AdaptiveRateLimiter
 from autopaint.store import Store
 from autopaint.useragent import fetch_user_agents
-from autopaint.voter import Voter
+from autopaint.voter import ActiveVoterTracker, Voter
 
 DEFAULT_TILE_ID = "019d589b-0d7b-720e-9a3c-1c8ecbc90a09"
 
@@ -38,9 +39,13 @@ def main() -> None:
         help="disable SOCKS5 proxy via Mullvad",
     )
     parser.add_argument(
+        "--proxy",
+        help="use a single proxy for all threads (e.g. socks5://127.0.0.1:40000)",
+    )
+    parser.add_argument(
         "--proxy-country",
         nargs="+",
-        default=["us", "ca"],
+        default=["us", "ca", "mx"],
         help="Mullvad proxy country codes",
     )
     parser.add_argument(
@@ -74,6 +79,11 @@ def main() -> None:
         help="tolerance (±) around the midpoint between neighbors",
     )
     parser.add_argument(
+        "--no-throttle",
+        action="store_true",
+        help="disable adaptive rate limiter but still respect 429s and cooldowns",
+    )
+    parser.add_argument(
         "--no-ratelimit",
         action="store_true",
         help="disable all rate limiting and vote as fast as possible",
@@ -93,6 +103,14 @@ def main() -> None:
         format="<green>{time:HH:mm:ss}</green> <level>{level:<8}</level> {message}",
     )
 
+    # Raise the file descriptor limit to avoid "Too many open files" with
+    # many threads each holding SOCKS + TLS connections.
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+
+    if soft < hard:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+        logger.debug("Raised fd limit from {} to {}", soft, hard)
+
     with open(args.cookies) as f:
         cookies = json.load(f)
 
@@ -100,7 +118,13 @@ def main() -> None:
     logger.info("Loaded {} sessions from {}", len(sessions), args.cookies)
 
     user_agents = fetch_user_agents()
-    proxies = [] if args.no_proxy else fetch_proxies(args.proxy_country)
+
+    if args.proxy:
+        proxies = [args.proxy]
+    elif args.no_proxy:
+        proxies = []
+    else:
+        proxies = fetch_proxies(args.proxy_country)
 
     gate = None
 
@@ -117,7 +141,13 @@ def main() -> None:
         start_monitor(gate, random.choice(user_agents))
 
     store = Store()
-    limiter = None if args.no_ratelimit else AdaptiveRateLimiter(store=store)
+
+    if args.no_ratelimit or args.no_throttle:
+        limiter = None
+    else:
+        limiter = AdaptiveRateLimiter(store=store)
+
+    tracker = ActiveVoterTracker(len(sessions))
     threads: list[threading.Thread] = []
 
     for index, session_cookie in enumerate(sessions, start=1):
@@ -131,6 +161,7 @@ def main() -> None:
             proxy=proxy,
             gate=gate,
             limiter=limiter,
+            tracker=tracker,
             store=store,
             no_ratelimit=args.no_ratelimit,
         )
