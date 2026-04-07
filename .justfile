@@ -10,6 +10,10 @@ run-hold *args:
 run-top1 *args:
     uv run python -m autopaint -v --top1 {{ args }}
 
+# Max votes at fixed rate with stall detection, no rank strategy
+run-max *args:
+    uv run python -m autopaint -v --rate 6 {{ args }}
+
 # Run without throttle (respects 429s and cooldowns)
 run-fast *args:
     uv run python -m autopaint -v --no-throttle {{ args }}

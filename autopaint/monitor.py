@@ -1,6 +1,8 @@
 import asyncio
 import json
+import random
 import threading
+import time
 
 import websockets
 import websockets.exceptions
@@ -10,6 +12,13 @@ WS_URL = "wss://please.paintastreet.com/connection/websocket"
 
 RECONNECT_DELAY_SECONDS = 5
 PING_INTERVAL_SECONDS = 25
+
+# Stall detection: if our vote count gains fewer than this many votes
+# over the check interval, we're probably being silently rate-limited.
+STALL_CHECK_INTERVAL = 120  # seconds between checks
+STALL_MIN_EXPECTED_GAIN = 5  # fewer than this = stalled
+STALL_PAUSE_MIN = 30  # seconds
+STALL_PAUSE_MAX = 60  # seconds
 
 
 class RankGate:
@@ -44,6 +53,7 @@ class RankGate:
         self._rankings: dict[str, int] = {}
         self._position: int | None = None
         self._direction: str | None = None
+        self._stall_paused: bool = False
         self._lock = threading.Lock()
         self._event = threading.Event()
 
@@ -91,8 +101,31 @@ class RankGate:
 
         return sorted_counts[n - 1]
 
+    def get_our_votes(self) -> int | None:
+        """Return the current vote count of the tracked tile."""
+        with self._lock:
+            return self._rankings.get(self.tile_id)
+
+    def set_stall_paused(self, paused: bool) -> None:
+        """Temporarily pause/resume voting due to stall detection."""
+        with self._lock:
+            self._stall_paused = paused
+
+            if paused:
+                self._direction = None
+            else:
+                self._direction = self._compute_direction()
+
+        if self._direction is not None:
+            self._event.set()
+        else:
+            self._event.clear()
+
     def _compute_direction(self) -> str | None:
         """Decide vote direction based on current rank and vote gap."""
+        if self._stall_paused:
+            return None
+
         if self.top1:
             return self._compute_direction_top1()
         return self._compute_direction_hold()
@@ -356,14 +389,86 @@ def _process_tiles(
         )
 
 
-def start_monitor(gate: RankGate, user_agent: str) -> threading.Thread:
-    """Launch the vote monitor in a background daemon thread."""
+def _stall_detector_loop(gate: RankGate) -> None:
+    """Periodically check if our vote count is stalling despite active voting.
+
+    If the tile's vote count barely increases over :data:`STALL_CHECK_INTERVAL`,
+    the server is likely silently dropping votes. Temporarily pause to let the
+    hidden rate limit window expire.
+    """
+    prev_votes: int | None = None
+
+    while True:
+        time.sleep(STALL_CHECK_INTERVAL)
+
+        current_votes = gate.get_our_votes()
+
+        if current_votes is None or prev_votes is None:
+            prev_votes = current_votes
+            continue
+
+        # Only check when the gate is actively voting (not paused by strategy).
+        if not gate._event.is_set():
+            prev_votes = current_votes
+            continue
+
+        gain = current_votes - prev_votes
+        prev_votes = current_votes
+
+        if gain >= STALL_MIN_EXPECTED_GAIN:
+            continue
+
+        # Stall detected — pause briefly.
+        pause = random.uniform(STALL_PAUSE_MIN, STALL_PAUSE_MAX)
+        logger.warning(
+            "Stall detected: only +{} votes in {}s, pausing {:.0f}s",
+            gain,
+            STALL_CHECK_INTERVAL,
+            pause,
+        )
+
+        gate.set_stall_paused(True)
+        time.sleep(pause)
+        gate.set_stall_paused(False)
+
+        logger.info("Stall pause ended, resuming voting")
+
+        # Reset baseline after pause.
+        prev_votes = gate.get_our_votes()
+
+
+def start_ws_monitor(gate: RankGate, user_agent: str) -> threading.Thread:
+    """Launch only the websocket rankings monitor."""
 
     def _run() -> None:
         asyncio.run(_monitor_loop(gate, user_agent))
 
     thread = threading.Thread(target=_run, daemon=True, name="vote-monitor")
     thread.start()
+
+    logger.info("WS rankings monitor started (tile={})", gate.tile_id[:8])
+    return thread
+
+
+def start_stall_detector(gate: RankGate) -> threading.Thread:
+    """Launch only the stall detector."""
+    thread = threading.Thread(
+        target=_stall_detector_loop,
+        args=(gate,),
+        daemon=True,
+        name="stall-detector",
+    )
+    thread.start()
+
+    logger.info("Stall detector started (check={}s, min_gain={})",
+                STALL_CHECK_INTERVAL, STALL_MIN_EXPECTED_GAIN)
+    return thread
+
+
+def start_monitor(gate: RankGate, user_agent: str) -> threading.Thread:
+    """Launch the full monitor suite: WS rankings + stall detector."""
+    thread = start_ws_monitor(gate, user_agent)
+    start_stall_detector(gate)
 
     mode = "top1" if gate.top1 else f"hold #{gate.rank_target}"
     logger.info(

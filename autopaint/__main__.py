@@ -79,6 +79,12 @@ def main() -> None:
         help="tolerance (±) around the midpoint between neighbors",
     )
     parser.add_argument(
+        "--rate",
+        type=float,
+        default=None,
+        help="fixed rate limit in req/s (disables adaptive AIMD)",
+    )
+    parser.add_argument(
         "--no-throttle",
         action="store_true",
         help="disable adaptive rate limiter but still respect 429s and cooldowns",
@@ -126,11 +132,16 @@ def main() -> None:
     else:
         proxies = fetch_proxies(args.proxy_country)
 
-    gate = None
+    from autopaint.monitor import (
+        RankGate,
+        start_monitor,
+        start_stall_detector,
+        start_ws_monitor,
+    )
+
+    monitor_ua = random.choice(user_agents)
 
     if args.auto_rank or args.top1:
-        from autopaint.monitor import RankGate, start_monitor
-
         gate = RankGate(
             args.tile_id,
             args.rank_target,
@@ -138,12 +149,23 @@ def main() -> None:
             args.vote_buffer,
             top1=args.top1,
         )
-        start_monitor(gate, random.choice(user_agents))
+        start_monitor(gate, monitor_ua)
+    else:
+        # No rank strategy, but still monitor for stall detection.
+        gate = RankGate(args.tile_id)
+        start_ws_monitor(gate, monitor_ua)
+        start_stall_detector(gate)
 
     store = Store()
 
     if args.no_ratelimit or args.no_throttle:
         limiter = None
+    elif args.rate is not None:
+        limiter = AdaptiveRateLimiter(
+            initial_rate=args.rate,
+            min_rate=args.rate,
+            max_rate=args.rate,
+        )
     else:
         limiter = AdaptiveRateLimiter(store=store)
 
