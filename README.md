@@ -2,6 +2,8 @@
 
 Automated voting bot for the [paintastreet.com](https://paintastreet.com/) ~~CTF~~. Built to manage tile rankings in the Paint a Street competition through multi-session concurrent voting with proxy rotation, adaptive rate limiting, and configurable ranking strategies.
 
+<img width="2504" height="1219" alt="image" src="https://github.com/user-attachments/assets/1edddf57-f781-4c97-925f-3c0a43e82bb3" />
+
 ## Architecture
 
 ```
