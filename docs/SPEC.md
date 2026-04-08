@@ -1,6 +1,6 @@
 # Technical Specification
 
-## API
+## Vote API
 
 ### Endpoint
 
@@ -10,9 +10,9 @@ PUT https://please.paintastreet.com/tiles/{tile_id}/vote
 
 ### Request
 
-Body: `{"direction": "up"}`
+Body: `{"direction": "up"}` or `{"direction": "down"}`
 
-Required headers (beyond User-Agent and Cookie):
+Common headers:
 
 ```
 Accept: */*
@@ -21,14 +21,16 @@ Accept-Encoding: gzip, deflate, br, zstd
 Referer: https://paintastreet.com/
 content-type: application/json
 Origin: https://paintastreet.com
-Sec-GPC: 1
 Connection: keep-alive
 Sec-Fetch-Dest: empty
 Sec-Fetch-Mode: cors
 Sec-Fetch-Site: same-site
-Priority: u=0
-TE: trailers
 ```
+
+Browser-specific headers are added based on the User-Agent (see `useragent.py`):
+
+- **Chrome**: `sec-ch-ua`, `sec-ch-ua-mobile`, `sec-ch-ua-platform`, `DNT: 1`, `Priority: u=1, i`
+- **Firefox**: `Sec-GPC: 1`, `TE: trailers`, `Priority: u=0`
 
 ### Responses
 
@@ -45,7 +47,7 @@ TE: trailers
 }
 ```
 
-**429 Too Many Requests** - per-session rate limit (includes budget info):
+**429 Too Many Requests** — per-session rate limit (includes budget info):
 
 ```json
 {
@@ -59,7 +61,7 @@ TE: trailers
 }
 ```
 
-**429 Too Many Requests** - per-tile rate limit (no budget info):
+**429 Too Many Requests** — per-tile rate limit (no budget info):
 
 ```json
 {
@@ -67,24 +69,76 @@ TE: trailers
 }
 ```
 
-Note: neither 429 variant includes a `Retry-After` header.
+Neither 429 variant includes a `Retry-After` header.
 
 ## Rate Limits
 
-There are two independent rate limits:
+### Per-session
 
-1. **Per-session**: 10 votes per ~10 minute window. The server returns `vote_budget.reset_at` (ISO 8601 UTC timestamp) and `vote_budget.window_seconds` in both 200 and 429 responses. The `remaining` field counts down from `limit` to 0.
+10 votes per ~10 minute sliding window. The response includes `vote_budget.reset_at` (ISO 8601 UTC) and `vote_budget.window_seconds`.
 
-2. **Per-tile**: A separate rate limit on the tile itself, likely per-IP. Returns only `{"error": "tile vote rate limit exceeded"}` with no timing information. This triggers when many sessions vote on the same tile in quick succession.
+### Per-tile (explicit)
 
-### Rate-Limit Strategy
+A separate rate limit on the tile endpoint. Returns `{"error": "tile vote rate limit exceeded"}` with no timing info. Triggers when many sessions vote on the same tile in quick succession. Observed threshold: ~6-7 req/s across all sessions.
 
-- **Per-session 429 or `remaining == 0`**: Parse `reset_at` from the response body, compute `reset_at - now + 1s`, and sleep that duration. Falls back to `window_seconds + 1s`, then to 600s.
-- **Per-tile 429**: Back off with random jitter (5-15s) and retry. No budget info is available, so the retry is short and randomized to naturally stagger threads.
+### Per-tile (silent)
+
+An additional hidden rate limit that silently drops votes without returning 429. Detected by observing that the tile's vote count stops increasing despite successful 200 responses. The stall detector monitors this via the WebSocket.
+
+## WebSocket Rankings
+
+### Connection
+
+```
+wss://please.paintastreet.com/connection/websocket
+```
+
+Uses the Centrifugo protocol. No authentication required.
+
+### Handshake
+
+```json
+→ {"id": 1, "connect": {}}
+← {"id": 1, "connect": {"client": "...", "ping": 25, "pong": true}}
+```
+
+Server pings every 25s with `{}`, expects `{}` back.
+
+### Rankings Subscription
+
+```json
+→ {"id": 2, "subscribe": {"channel": "rankings"}}
+```
+
+#### Initial Snapshot
+
+```json
+← {"id": 2, "subscribe": {"data": {"type": "rankings_snapshot", "seq": 15211, "tiles": [
+    {"id": "tile-uuid", "vote_count": 9031},
+    ...
+]}}}
+```
+
+Contains all tiles with current vote counts.
+
+#### Incremental Patches
+
+```json
+← {"push": {"channel": "rankings", "pub": {"data": {
+    "type": "rankings_patch",
+    "base_seq": 15211,
+    "seq": 15212,
+    "upserts": [
+        {"id": "tile-uuid", "vote_count": 9032}
+    ]
+}}}}
+```
+
+Only contains tiles whose vote counts changed. Messages may be batched (multiple JSON objects separated by newlines in a single WebSocket frame).
 
 ## Cookies Format
 
-The `data/cookies.json` file is a JSON array of cookie objects exported from Firefox using [Cookie Quick Manager](https://github.com/ysard/cookie-quick-manager). Each object must have at least:
+JSON array exported from Firefox via [Cookie Quick Manager](https://github.com/ysard/cookie-quick-manager). Each entry must have:
 
 ```json
 {
@@ -92,43 +146,21 @@ The `data/cookies.json` file is a JSON array of cookie objects exported from Fir
 }
 ```
 
-Other fields (`Host raw`, `Name raw`, `Expires`, `Store raw`, etc.) are ignored by the program.
+Other fields are ignored.
 
-## User Agents
+## Mullvad Proxies
 
-On startup, a list of user agent strings is fetched from:
-
-```
-https://raw.githubusercontent.com/MichaelJorky/top-user-agents-latest/refs/heads/main/data/browsers/browsers_1.txt
-```
-
-Each voter thread is assigned one random UA at startup (fixed for the thread's lifetime).
-
-## SOCKS5 Proxies
-
-By default, each voter thread routes traffic through a random Mullvad SOCKS5 proxy. Proxies are fetched at startup from the Mullvad relay API:
+Fetched from:
 
 ```
 GET https://api.mullvad.net/public/relays/wireguard/v2
 ```
 
-The response contains a `wireguard.relays` array. Active relays whose `location` starts with the configured country code (default `ca`) are selected. The hostname is transformed from `wg-` to `wg-socks5-` and suffixed with `.relays.mullvad.net:1080` to form the SOCKS5 address.
-
-Example: relay hostname `ca-mtr-wg-001` becomes `socks5://ca-mtr-wg-socks5-001.relays.mullvad.net:1080`.
-
-Each thread gets one random proxy at startup (fixed for the thread's lifetime). Proxying can be disabled with `--no-proxy`, and the country code can be changed with `--proxy-country`. Available country codes include: `al`, `ar`, `at`, `au`, `be`, `bg`, `br`, `ca`, `ch`, `cl`, `co`, `cy`, `cz`, `de`, `dk`, `ee`, `es`, `fi`, `fr`, `gb`, `gr`, `hk`, `hr`, `hu`, `id`, `ie`, `il`, `it`, `jp`, `mx`, `my`, `ng`, `nl`, `no`, `nz`, `pe`, `ph`, `pl`, `pt`, `ro`, `rs`, `se`, `sg`, `si`, `sk`, `th`, `tr`, `ua`, `us`, `za`.
-
-Requires `requests[socks]` (PySocks) for SOCKS5 support.
-
-## Threading Model
-
-- One `threading.Thread(daemon=True)` per session cookie.
-- All threads share no mutable state (each `Voter` instance is independent).
-- The main thread joins all worker threads and exits on `KeyboardInterrupt`.
-- Threads naturally stagger over time due to independent rate-limit windows and jitter on tile-level 429 retries.
+Active relays matching the configured country codes are selected. Hostnames are transformed: `ca-mtr-wg-001` → `socks5://ca-mtr-wg-socks5-001.relays.mullvad.net:1080`.
 
 ## Build System
 
 - Build backend: [hatchling](https://hatch.pypa.io/)
-- Version: dynamic, read from `autopaint/__init__.py` (`__version__` variable)
-- Dependencies: `requests[socks]`, `loguru`
+- Version: dynamic, read from `autopaint/__init__.py`
+- Dependencies: `requests[socks]`, `loguru`, `websockets`
+- Test dependencies: `pytest`, `pytest-asyncio`
